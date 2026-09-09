@@ -1,0 +1,374 @@
+/* Snake 8x8 para RTM32
+   Teclas: w a s d  en la ventana UART (xterm/picocom), NO en telnet.
+
+   ./rtm32.asm snake.rtm -o snake.bin
+   ./rtm32 -d telnet          (sin --log)
+   load snake.bin    y    c
+*/
+
+.section ".data"
+	largo:    .word 3
+	dir_x:    .word 1
+	dir_y:    .word 0
+	comida_x: .word 5
+	comida_y: .word 4
+	// si va muy rapido, subi este numero
+	espera:   .word 20
+
+	cuerpo_x: .byte 1 2 3
+	.pad 29
+	cuerpo_y: .byte 2 2 2
+	.pad 29
+	tablero:  .pad 64
+
+	borrar:    .asciiz "\x1b[2J\x1b[H"
+	ayuda:     .asciiz "wasd (ventana UART)\r\n"
+	perdiste:  .asciiz "Perdiste"
+	ansi_rojo: .asciiz "\x1b[31m"
+	ansi_reset:.asciiz "\x1b[0m"
+	borde_top: .asciiz "----------\r\n"
+
+.section ".text"
+	addi $sp, $zero, 0xFFC
+	addi $s2, $zero, -0x100
+	orh $s6, $zero, .hi16 cuerpo_x
+	ori $s6, $s6,   .lo16 cuerpo_x
+	orh $s7, $zero, .hi16 cuerpo_y
+	ori $s7, $s7,   .lo16 cuerpo_y
+	addi $s4, $zero, 8
+	j dibujar
+
+
+// UART: +4 = estado (bit 0 = hay tecla), +0 = caracter
+// Una tecla por llamada, siempre volvemos con jr $ra
+leer_tecla:
+	lbu $t0, 4($s2)
+	andi $t0, $t0, 1
+	beq $t0, $zero, leer_tecla.salir
+	lbu $t0, 0($s2)
+
+	addi $t1, $zero, 'w'
+	beq $t0, $t1, tecla_w
+	addi $t1, $zero, 's'
+	beq $t0, $t1, tecla_s
+	addi $t1, $zero, 'a'
+	beq $t0, $t1, tecla_a
+	addi $t1, $zero, 'd'
+	beq $t0, $t1, tecla_d
+	j leer_tecla.salir
+
+tecla_w:
+	lw $t0, dir_y($zero)
+	addi $t1, $zero, 1
+	beq $t0, $t1, leer_tecla.salir
+	addi $t0, $zero, 0
+	addi $t1, $zero, -1
+	sw $t0, dir_x($zero)
+	sw $t1, dir_y($zero)
+	j leer_tecla.salir
+
+tecla_s:
+	lw $t0, dir_y($zero)
+	addi $t1, $zero, -1
+	beq $t0, $t1, leer_tecla.salir
+	addi $t0, $zero, 0
+	addi $t1, $zero, 1
+	sw $t0, dir_x($zero)
+	sw $t1, dir_y($zero)
+	j leer_tecla.salir
+
+tecla_a:
+	lw $t0, dir_x($zero)
+	addi $t1, $zero, 1
+	beq $t0, $t1, leer_tecla.salir
+	addi $t0, $zero, -1
+	addi $t1, $zero, 0
+	sw $t0, dir_x($zero)
+	sw $t1, dir_y($zero)
+	j leer_tecla.salir
+
+tecla_d:
+	lw $t0, dir_x($zero)
+	addi $t1, $zero, -1
+	beq $t0, $t1, leer_tecla.salir
+	addi $t0, $zero, 1
+	addi $t1, $zero, 0
+	sw $t0, dir_x($zero)
+	sw $t1, dir_y($zero)
+
+leer_tecla.salir:
+	jr $ra, 0
+
+
+// bucle del juego: dibujar -> esperar (teclas + delay) -> mover -> dibujar
+esperar:
+	lw $s0, espera($zero)
+esperar.bucle:
+	beq $s0, $zero, mover
+	jal leer_tecla
+	addi $t5, $zero, 300
+esperar.spin:
+	beq $t5, $zero, esperar.dec
+	addi $t5, $t5, -1
+	j esperar.spin
+esperar.dec:
+	addi $s0, $s0, -1
+	j esperar.bucle
+
+
+mover:
+	lw $s0, largo($zero)
+	addi $s0, $s0, -1
+
+	add $t0, $s6, $s0
+	lbu $s1, 0($t0)
+	lw $t0, dir_x($zero)
+	add $s1, $s1, $t0
+
+	add $t0, $s7, $s0
+	lbu $s3, 0($t0)
+	lw $t0, dir_y($zero)
+	add $s3, $s3, $t0
+
+	// pared: usamos slt porque blt en el assembler compara rs/rt al reves
+	slt $t0, $s1, $zero
+	bne $t0, $zero, fin
+	slt $t0, $s1, $s4
+	beq $t0, $zero, fin
+	slt $t0, $s3, $zero
+	bne $t0, $zero, fin
+	slt $t0, $s3, $s4
+	beq $t0, $zero, fin
+
+	addi $t0, $zero, 0
+choque:
+	lw $t1, largo($zero)
+	beq $t0, $t1, comida
+	add $t2, $s6, $t0
+	lbu $t2, 0($t2)
+	bne $t2, $s1, choque.sig
+	add $t2, $s7, $t0
+	lbu $t2, 0($t2)
+	beq $t2, $s3, fin
+choque.sig:
+	addi $t0, $t0, 1
+	j choque
+
+comida:
+	lw $t0, comida_x($zero)
+	bne $s1, $t0, avanzar
+	lw $t0, comida_y($zero)
+	bne $s3, $t0, avanzar
+
+	lw $t0, largo($zero)
+	addi $t1, $zero, 32
+	slt $t1, $t0, $t1
+	beq $t1, $zero, avanzar
+	add $t1, $s6, $t0
+	sb $s1, 0($t1)
+	add $t1, $s7, $t0
+	sb $s3, 0($t1)
+	addi $t0, $t0, 1
+	sw $t0, largo($zero)
+
+	lw $t0, largo($zero)
+	addi $t1, $zero, 32
+	beq $t0, $t1, dibujar
+
+	addi $t5, $zero, 64
+spawn_retry:
+	beq $t5, $zero, dibujar
+	lw $t0, comida_x($zero)
+	addi $t0, $t0, 3
+	restu $t0, $t0, $s4
+	sw $t0, comida_x($zero)
+	lw $t0, comida_y($zero)
+	addi $t0, $t0, 2
+	restu $t0, $t0, $s4
+	sw $t0, comida_y($zero)
+	addi $t0, $zero, 0
+overlap_loop:
+	lw $t1, largo($zero)
+	beq $t0, $t1, spawn_ok
+	add $t2, $s6, $t0
+	lbu $t2, 0($t2)
+	lw $t3, comida_x($zero)
+	bne $t2, $t3, overlap_sig
+	add $t2, $s7, $t0
+	lbu $t2, 0($t2)
+	lw $t3, comida_y($zero)
+	bne $t2, $t3, overlap_sig
+	addi $t5, $t5, -1
+	j spawn_retry
+overlap_sig:
+	addi $t0, $t0, 1
+	j overlap_loop
+spawn_ok:
+	j dibujar
+
+avanzar:
+	addi $t0, $zero, 0
+corrimiento:
+	lw $t1, largo($zero)
+	addi $t1, $t1, -1
+	beq $t0, $t1, poner_cabeza
+	addi $t1, $t0, 1
+	add $t2, $s6, $t1
+	lbu $t3, 0($t2)
+	add $t2, $s6, $t0
+	sb $t3, 0($t2)
+	add $t2, $s7, $t1
+	lbu $t3, 0($t2)
+	add $t2, $s7, $t0
+	sb $t3, 0($t2)
+	addi $t0, $t0, 1
+	j corrimiento
+
+poner_cabeza:
+	lw $t0, largo($zero)
+	addi $t0, $t0, -1
+	add $t1, $s6, $t0
+	sb $s1, 0($t1)
+	add $t1, $s7, $t0
+	sb $s3, 0($t1)
+
+
+dibujar:
+	orh $t4, $zero, .hi16 tablero
+	ori $t4, $t4,   .lo16 tablero
+	addi $t0, $zero, 0
+	addi $t1, $zero, '.'
+llenar:
+	addi $t2, $zero, 64
+	beq $t0, $t2, poner_comida
+	add $t2, $t4, $t0
+	sb $t1, 0($t2)
+	addi $t0, $t0, 1
+	j llenar
+
+poner_comida:
+	lw $t0, comida_y($zero)
+	sll $t0, $t0, 3
+	lw $t1, comida_x($zero)
+	add $t0, $t0, $t1
+	add $t0, $t4, $t0
+	addi $t1, $zero, '*'
+	sb $t1, 0($t0)
+
+	addi $t0, $zero, 0
+poner_cuerpo:
+	lw $t1, largo($zero)
+	beq $t0, $t1, poner_cabeza_dibujo
+	add $t2, $s7, $t0
+	lbu $t2, 0($t2)
+	sll $t2, $t2, 3
+	add $t3, $s6, $t0
+	lbu $t3, 0($t3)
+	add $t2, $t2, $t3
+	add $t2, $t4, $t2
+	addi $t3, $zero, 'o'
+	sb $t3, 0($t2)
+	addi $t0, $t0, 1
+	j poner_cuerpo
+
+poner_cabeza_dibujo:
+	lw $t0, largo($zero)
+	addi $t0, $t0, -1
+	add $t2, $s7, $t0
+	lbu $t2, 0($t2)
+	sll $t2, $t2, 3
+	add $t3, $s6, $t0
+	lbu $t3, 0($t3)
+	add $t2, $t2, $t3
+	add $t2, $t4, $t2
+	addi $t3, $zero, '@'
+	sb $t3, 0($t2)
+
+	orh $a0, $zero, .hi16 borrar
+	ori $a0, $a0,   .lo16 borrar
+	jal imprimir_str
+	orh $a0, $zero, .hi16 ayuda
+	ori $a0, $a0,   .lo16 ayuda
+	jal imprimir_str
+
+	orh $a0, $zero, .hi16 borde_top
+	ori $a0, $a0,   .lo16 borde_top
+	jal imprimir_str
+
+	addi $t0, $zero, 0
+imprimir:
+	addi $t1, $zero, 64
+	beq $t0, $t1, imprimir_bot
+	andi $t1, $t0, 7
+	bne $t1, $zero, imprimir.celda
+	addi $t1, $zero, '|'
+	sb $t1, 0($s2)
+imprimir.celda:
+	add $t1, $t4, $t0
+	lbu $t1, 0($t1)
+	addi $t2, $zero, '*'
+	bne $t1, $t2, imprimir.normal
+	addi $sp, $sp, -16
+	sw $ra, 12($sp)
+	sw $t0, 8($sp)
+	sw $t4, 4($sp)
+	orh $a0, $zero, .hi16 ansi_rojo
+	ori $a0, $a0,   .lo16 ansi_rojo
+	jal imprimir_str
+	addi $t1, $zero, '*'
+	sb $t1, 0($s2)
+	orh $a0, $zero, .hi16 ansi_reset
+	ori $a0, $a0,   .lo16 ansi_reset
+	jal imprimir_str
+	lw $t4, 4($sp)
+	lw $t0, 8($sp)
+	lw $ra, 12($sp)
+	addi $sp, $sp, 16
+	j imprimir.fila
+imprimir.normal:
+	sb $t1, 0($s2)
+imprimir.fila:
+	andi $t1, $t0, 7
+	addi $t2, $zero, 7
+	bne $t1, $t2, imprimir.sig
+	addi $t1, $zero, '|'
+	sb $t1, 0($s2)
+	addi $t1, $zero, '\r'
+	sb $t1, 0($s2)
+	addi $t1, $zero, '\n'
+	sb $t1, 0($s2)
+imprimir.sig:
+	addi $t0, $t0, 1
+	j imprimir
+
+imprimir_bot:
+	orh $a0, $zero, .hi16 borde_top
+	ori $a0, $a0,   .lo16 borde_top
+	jal imprimir_str
+	j esperar
+
+
+imprimir_str:
+	addi $t0, $a0, 0
+imprimir_str.bucle:
+	lbu $t1, 0($t0)
+	beq $t1, $zero, imprimir_str.salir
+	sb $t1, 0($s2)
+	addi $t0, $t0, 1
+	j imprimir_str.bucle
+imprimir_str.salir:
+	jr $ra, 0
+
+
+fin:
+	orh $a0, $zero, .hi16 borrar
+	ori $a0, $a0,   .lo16 borrar
+	jal imprimir_str
+	orh $a0, $zero, .hi16 perdiste
+	ori $a0, $a0,   .lo16 perdiste
+	jal imprimir_str
+	addi $t1, $zero, '\r'
+	sb $t1, 0($s2)
+	addi $t1, $zero, '\n'
+	sb $t1, 0($s2)
+	trap 1
