@@ -1,0 +1,63 @@
+/* Palindromo estricto para RTM32
+   Compara bytes tal cual. No ignora espacios ni mayusculas. Osea Oso no va a dar verdadero, Tampoco "Anita lava la tina" que si son palindromos en ambos casos.
+
+   Cambiar la palabra = editar `cadena` abajo.
+
+   ./rtm32.asm palindromo.rtm -o palindromo.bin
+   ./rtm32 -d telnet
+   telnet -4 localhost 4444 → load pal.bin → c
+   Resultado en ventana
+
+*/
+
+.section ".data"
+	cadena: .asciiz "reconocer"
+	cadena_ptr: .ptr cadena
+
+.section ".text"
+	lw $s0, cadena_ptr($zero)
+	addi $s2, $zero, -0x100
+
+len_loop:
+	add $t0, $s0, $s1
+	lbu $t0, 0($t0)
+	beq $t0, $zero, len_ok
+	addi $s1, $s1, 1
+	j len_loop
+
+len_ok:
+	addi $s4, $s1, -1
+
+	// mientras L < R: si buf[L] != buf[R] → NO
+
+check:
+	slt $t0, $s3, $s4
+	beq $t0, $zero, es_si
+	add $t0, $s0, $s3
+	lbu $t1, 0($t0)
+	add $t0, $s0, $s4
+	lbu $t2, 0($t0)
+	bne $t1, $t2, es_no
+	addi $s3, $s3, 1
+	addi $s4, $s4, -1
+	j check
+
+es_si:
+	addi $t0, $zero, 'S'
+	sb $t0, 0($s2)
+	addi $t0, $zero, 'I'
+	sb $t0, 0($s2)
+	j crlf
+
+es_no:
+	addi $t0, $zero, 'N'
+	sb $t0, 0($s2)
+	addi $t0, $zero, 'O'
+	sb $t0, 0($s2)
+
+crlf:
+	addi $t0, $zero, '\r'
+	sb $t0, 0($s2)
+	addi $t0, $zero, '\n'
+	sb $t0, 0($s2)
+	trap 1
